@@ -60,10 +60,10 @@ function parseVless(url) {
         node.tls = true;
         node["client-fingerprint"] = q.get("fp") || "chrome";
         node["reality-opts"] = { "public-key": q.get("pbk") || "", "short-id": q.get("sid") || "" };
-        node._subtype = "REALITY"; // 添加子类型
+        node._subtype = "REALITY";
     } else if (security === "tls") {
         node.tls = true;
-        node._subtype = "TLS"; // 添加子类型
+        node._subtype = "TLS";
     } else {
         node.tls = false;
     }
@@ -122,9 +122,9 @@ function parseTrojan(url) {
     if (security === "reality") {
         node["client-fingerprint"] = q.get("fp") || "chrome";
         node["reality-opts"] = { "public-key": q.get("pbk") || "", "short-id": q.get("sid") || "" };
-        node._subtype = "REALITY"; // 添加子类型
+        node._subtype = "REALITY";
     } else {
-        node._subtype = "TLS"; // 标准 Trojan 默认为 TLS
+        node._subtype = "TLS";
     }
     return node;
 }
@@ -149,15 +149,16 @@ function parseLink(url) {
         else if (url.startsWith("wireguard://") || url.startsWith("wg://")) node = parseWireGuard(url);
         else if (url.startsWith("socks5://")) node = parseSocks(url);
         else if (url.startsWith("http://") || url.startsWith("https://")) node = parseHttpProxy(url);
-    } catch (e) { 
-        console.error(`解析失败 (Failed to parse): ${url.substring(0, 50)}...`, e); 
+    } catch (e) {
+        console.error(`解析失败 (Failed to parse): ${url.substring(0, 50)}...`, e);
     }
 
     if (node) {
+        Object.keys(node).forEach(key => (node[key] === undefined || node[key] === null || (typeof node[key] === 'string' && node[key] === '')) && delete node[key]);
         let protocol = node.type.toUpperCase();
         if (node._subtype) {
             protocol += `_${node._subtype}`;
-            delete node._subtype; // 清理临时属性
+            delete node._subtype;
         }
         const originalName = node.name;
         const truncatedName = originalName.length > 20 ? originalName.substring(0, 20) + '...' : originalName;
@@ -167,32 +168,158 @@ function parseLink(url) {
 }
 
 // ========== YAML输出及页面交互 ==========
+function proxyToExpandedYaml(p) {
+    const lines = [];
+    const mainIndent = '  ';
+    const subIndent = '    ';
+    lines.push(`${mainIndent}- name: ${JSON.stringify(p.name)}`);
+    for (const key in p) {
+        if (key === 'name') continue;
+        const value = p[key];
+        if (value === undefined || value === null) continue;
+        if (Array.isArray(value)) {
+            if (value.length === 0) continue;
+            lines.push(`${subIndent}${key}:`);
+            value.forEach(item => {
+                lines.push(`${subIndent}  - ${JSON.stringify(item)}`);
+            });
+        } else if (typeof value === 'object') {
+            if (Object.keys(value).length === 0) continue;
+            lines.push(`${subIndent}${key}:`);
+            for (const subKey in value) {
+                lines.push(`${subIndent}  ${subKey}: ${JSON.stringify(value[subKey])}`);
+            }
+        } else {
+            lines.push(`${subIndent}${key}: ${JSON.stringify(value)}`);
+        }
+    }
+    return lines.join('\n');
+}
+
 function convert() {
     const lines = document.getElementById("input").value.trim().split("\n");
     const proxies = lines.map(line => line.trim()).filter(Boolean).map(parseLink).filter(Boolean);
     const full = document.getElementById("fullConfig").checked;
     let yamlString = "";
 
-    if (full) {
+    if (full && proxies.length > 0) {
         const proxyNames = proxies.map(p => p.name);
         let finalYaml = "port: 7890\nsocks-port: 7891\nmode: rule\nallow-lan: true\nlog-level: info\n\nproxies:\n";
         proxies.forEach(p => {
-             finalYaml += `  - ${JSON.stringify(p)}\n`;
+             finalYaml += `${proxyToExpandedYaml(p)}\n`;
         });
         finalYaml += "\nproxy-groups:\n";
-        finalYaml += "  - name: 🚀 节点选择\n    type: select\n    proxies:\n      - DIRECT\n";
+        // [修改] 将组名改为 PROXY 以匹配新规则
+        finalYaml += "  - name: PROXY\n    type: select\n    proxies:\n      - DIRECT\n";
         proxyNames.forEach(name => {
              finalYaml += `      - "${name}"\n`;
         });
-        finalYaml += "\nrule-providers:\n";
-        finalYaml += "  proxy:\n    type: http\n    behavior: domain\n    url: https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/proxy.txt \n    path: ./ruleset/proxy.yaml\n    interval: 86400\n";
-        finalYaml += "  ChinaIp:\n    type: http\n    behavior: ipcidr\n    url: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/cncidr.txt \n    path: ./ruleset/china_ip.yaml\n    interval: 86400\n";
-        finalYaml += "\nrules:\n  - RULE-SET,ChinaIp,DIRECT \n  - RULE-SET,proxy,🚀 节点选择\n  - MATCH,🚀 节点选择\n";
+
+        // [修改] 替换为新的、更全面的规则集
+        finalYaml += `
+rule-providers:
+  reject:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/reject.txt"
+    path: ./ruleset/reject.yaml
+    interval: 86400
+  icloud:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/icloud.txt"
+    path: ./ruleset/icloud.yaml
+    interval: 86400
+  apple:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/apple.txt"
+    path: ./ruleset/apple.yaml
+    interval: 86400
+  google:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/google.txt"
+    path: ./ruleset/google.yaml
+    interval: 86400
+  proxy:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/proxy.txt"
+    path: ./ruleset/proxy.yaml
+    interval: 86400
+  direct:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/direct.txt"
+    path: ./ruleset/direct.yaml
+    interval: 86400
+  private:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/private.txt"
+    path: ./ruleset/private.yaml
+    interval: 86400
+  gfw:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/gfw.txt"
+    path: ./ruleset/gfw.yaml
+    interval: 86400
+  tld-not-cn:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/tld-not-cn.txt"
+    path: ./ruleset/tld-not-cn.yaml
+    interval: 86400
+  telegramcidr:
+    type: http
+    behavior: ipcidr
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/telegramcidr.txt"
+    path: ./ruleset/telegramcidr.yaml
+    interval: 86400
+  cncidr:
+    type: http
+    behavior: ipcidr
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/cncidr.txt"
+    path: ./ruleset/cncidr.yaml
+    interval: 86400
+  lancidr:
+    type: http
+    behavior: ipcidr
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/lancidr.txt"
+    path: ./ruleset/lancidr.yaml
+    interval: 86400
+  applications:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/applications.txt"
+    path: ./ruleset/applications.yaml
+    interval: 86400
+
+rules:
+  - RULE-SET,applications,DIRECT
+  - DOMAIN,clash.razord.top,DIRECT
+  - DOMAIN,yacd.haishan.me,DIRECT
+  - RULE-SET,private,DIRECT
+  - RULE-SET,reject,REJECT
+  - RULE-SET,icloud,DIRECT
+  - RULE-SET,apple,DIRECT
+  - RULE-SET,google,PROXY
+  - RULE-SET,proxy,PROXY
+  - RULE-SET,direct,DIRECT
+  - RULE-SET,lancidr,DIRECT
+  - RULE-SET,cncidr,DIRECT
+  - RULE-SET,telegramcidr,PROXY
+  - GEOIP,LAN,DIRECT
+  - GEOIP,CN,DIRECT
+  - MATCH,PROXY
+`;
         yamlString = finalYaml;
     } else {
-        yamlString = "proxies:\n" + proxies.map(p => `  - ${JSON.stringify(p)}`).join('\n');
+        yamlString = "proxies:\n" + proxies.map(p => proxyToExpandedYaml(p)).join('\n');
     }
-    document.getElementById("output").textContent = yamlString;
+    document.getElementById("output").textContent = yamlString.trim();
 }
 function copyOutput() { const text = document.getElementById("output").textContent; if (!text.trim()) return; navigator.clipboard.writeText(text).then(() => alert("配置已复制"));}
 function downloadYaml() { const text = document.getElementById("output").textContent; if (!text.trim()) return; const blob = new Blob([text], {type: 'text/yaml'}); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'clash-meta-config.yaml'; a.click(); URL.revokeObjectURL(a.href);}
