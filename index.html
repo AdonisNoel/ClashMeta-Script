@@ -185,9 +185,9 @@ function convert() {
              finalYaml += `      - "${name}"\n`;
         });
         finalYaml += "\nrule-providers:\n";
-        finalYaml += "  ChinaDomain:\n    type: http\n    behavior: domain\n    url: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/china_domain.txt\n    path: ./ruleset/china_domain.yaml\n    interval: 86400\n";
-        finalYaml += "  ChinaIp:\n    type: http\n    behavior: ipcidr\n    url: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/china_ip.txt\n    path: ./ruleset/china_ip.yaml\n    interval: 86400\n";
-        finalYaml += "\nrules:\n  - RULE-SET,ChinaDomain,DIRECT\n  - RULE-SET,ChinaIp,DIRECT\n  - MATCH,🚀 节点选择\n";
+        finalYaml += "  proxy:\n    type: http\n    behavior: domain\n    url: https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/proxy.txt \n    path: ./ruleset/proxy.yaml\n    interval: 86400\n";
+        finalYaml += "  ChinaIp:\n    type: http\n    behavior: ipcidr\n    url: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/cncidr.txt \n    path: ./ruleset/china_ip.yaml\n    interval: 86400\n";
+        finalYaml += "\nrules:\n  - RULE-SET ,ChinaIp,DIRECT \n  - RULE-SET,proxy,🚀 节点选择\n  - MATCH,🚀 节点选择\n";
         yamlString = finalYaml;
     } else {
         yamlString = "proxies:\n" + proxies.map(p => `  - ${JSON.stringify(p)}`).join('\n');
