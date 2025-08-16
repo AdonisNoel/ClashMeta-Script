@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>节点转 Clash.Meta 配置</title>
+<style>
+body { font-family: 'Segoe UI', Arial, sans-serif; background: #f4f6f8; padding: 20px; color: #333; }
+.container { max-width: 900px; margin: auto; background: #fff; padding: 20px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+h1 { text-align: center; margin-bottom: 20px; }
+textarea { width: 100%; height: 200px; padding: 10px; font-family: monospace; font-size: 14px; border: 1px solid #ccc; border-radius: 5px; resize: vertical; }
+.controls { margin: 15px 0; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+button { padding: 10px 15px; border: none; border-radius: 5px; background: #4CAF50; color: white; font-size: 14px; cursor: pointer; transition: .2s; }
+button:hover { background: #45a049; }
+.checkbox-label { display: flex; align-items: center; gap: 5px; font-size: 14px; }
+pre { white-space: pre-wrap; word-break: break-word; background: #272822; color: #f8f8f2; padding: 15px; border-radius: 5px; max-height: 500px; overflow-y: auto; }
+@media (max-width:600px){ .controls { flex-direction: column; align-items: stretch; } }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>节点转 Clash.Meta 配置</h1>
+<textarea id="input" placeholder="在这里粘贴节点链接，每行一个"></textarea>
+<div class="controls">
+<label class="checkbox-label">
+<input type="checkbox" id="fullConfig" checked>
+生成完整配置（含规则）
+</label>
+<button onclick="convert()">生成</button>
+<button onclick="copyOutput()">复制</button>
+<button onclick="downloadYaml()">下载</button>
+</div>
+<pre id="output"></pre>
+</div>
+
+<script>
+// ========== 工具函数 ==========
+function safeB64Decode(str) {
+    try {
+        str = str.replace(/-/g, '+').replace(/_/g, '/');
+        const pad = str.length % 4;
+        if (pad) str += '='.repeat(4 - pad);
+        return decodeURIComponent(escape(atob(str)));
+    } catch { return ''; }
+}
+
+// ========== 协议解析 ==========
+function parseVless(url) {
+    const u = new URL(url);
+    const name = decodeURIComponent(u.hash.replace('#', '')) || `${u.hostname}:${u.port}`;
+    const q = u.searchParams;
+    const node = {
+        name, type: "vless", server: u.hostname, port: parseInt(u.port),
+        uuid: u.username, udp: true,
+        network: q.get("type") || "tcp",
+        servername: q.get("sni") || q.get("host") || u.hostname,
+    };
+    const security = q.get("security");
+    if (security === "reality") {
+        node.tls = true;
+        node["client-fingerprint"] = q.get("fp") || "chrome";
+        node["reality-opts"] = { "public-key": q.get("pbk") || "", "short-id": q.get("sid") || "" };
+        node._subtype = "REALITY"; // 添加子类型
+    } else if (security === "tls") {
+        node.tls = true;
+        node._subtype = "TLS"; // 添加子类型
+    } else {
+        node.tls = false;
+    }
+    if (node.network === "ws") node["ws-opts"] = { path: decodeURIComponent(q.get("path") || "/"), headers: { Host: q.get("host") || u.hostname }};
+    if (node.network === "grpc") node["grpc-opts"] = { "grpc-service-name": q.get("serviceName") || "" };
+    return node;
+}
+function parseVmess(url) { const data = JSON.parse(safeB64Decode(url.slice(8))); const node = { name: data.ps || `${data.add}:${data.port}`, type: "vmess", server: data.add, port: parseInt(data.port), uuid: data.id, alterId: parseInt(data.aid || 0), cipher: data.scy || "auto", udp: true, tls: data.tls === "tls", network: data.net || "tcp" }; if (node.network === "ws") node["ws-opts"] = { path: data.path || "", headers: { Host: data.host || "" }}; return node; }
+function parseSS(url) {
+    try {
+        const u = new URL(url);
+        const name = decodeURIComponent(u.hash.replace('#', '')) || `${u.hostname}:${u.port}`;
+        let userInfo = u.username;
+        if (u.password) userInfo = `${u.username}:${u.password}`;
+        const decodedUserInfo = safeB64Decode(userInfo);
+        const firstColonIndex = decodedUserInfo.indexOf(':');
+        if (firstColonIndex === -1) return null;
+        const method = decodedUserInfo.substring(0, firstColonIndex);
+        const password = decodedUserInfo.substring(firstColonIndex + 1);
+        const node = { name, type: "ss", server: u.hostname, port: parseInt(u.port), cipher: method, password: password, udp: true };
+        const plugin = u.searchParams.get("plugin");
+        if (plugin) {
+            const decodedPlugin = decodeURIComponent(plugin);
+            if (decodedPlugin.includes('v2ray-plugin')) {
+                node.plugin = 'v2ray-plugin';
+                const pluginParts = decodedPlugin.split(';');
+                const opts = {};
+                pluginParts.forEach(part => {
+                    const [key, value] = part.split('=');
+                    if (key === 'obfs' && value === 'websocket') opts.mode = 'websocket';
+                    else if (key === 'obfs-host' || key === 'host') opts.host = value;
+                    else if (key === 'path') opts.path = value;
+                    else if (key === 'tls') opts.tls = true;
+                });
+                if (opts.mode === 'websocket') {
+                    node['plugin-opts'] = {
+                        mode: 'websocket', tls: opts.tls || false,
+                        host: opts.host || u.hostname, path: opts.path || "/",
+                        skip_cert_verify: opts.tls || false
+                    };
+                } else { node['plugin-opts'] = opts; }
+            }
+        }
+        return node;
+    } catch (e) { console.error("Failed to parse SS URL:", url, e); return null; }
+}
+function parseTrojan(url) {
+    const u = new URL(url);
+    const name = decodeURIComponent(u.hash.replace('#', '')) || `${u.hostname}:${u.port}`;
+    const q = u.searchParams;
+    const node = {
+        name, type: "trojan", server: u.hostname, port: parseInt(u.port),
+        password: u.username, udp: true, sni: q.get("sni") || u.hostname,
+    };
+    const security = q.get("security");
+    if (security === "reality") {
+        node["client-fingerprint"] = q.get("fp") || "chrome";
+        node["reality-opts"] = { "public-key": q.get("pbk") || "", "short-id": q.get("sid") || "" };
+        node._subtype = "REALITY"; // 添加子类型
+    } else {
+        node._subtype = "TLS"; // 标准 Trojan 默认为 TLS
+    }
+    return node;
+}
+function parseHysteria(url) { const u = new URL(url); const name = decodeURIComponent(u.hash.replace('#', '')) || `${u.hostname}:${u.port}`; return {name, type: "hysteria", server: u.hostname, port: parseInt(u.port), auth_str: u.username || "", alpn: u.searchParams.get("alpn")?.split(',') || [], protocol: u.searchParams.get("protocol") || "udp", up: u.searchParams.get("up") || "", down: u.searchParams.get("down") || "", sni: u.searchParams.get("sni") || u.hostname, skip_cert_verify: u.searchParams.get("insecure") === "1"};}
+function parseHysteria2(url) { const u = new URL(url); const name = decodeURIComponent(u.hash.replace('#', '')) || `${u.hostname}:${u.port}`; return {name, type: "hysteria2", server: u.hostname, port: parseInt(u.port), password: u.username || "", alpn: u.searchParams.get("alpn")?.split(',') || [], sni: u.searchParams.get("sni") || u.hostname, skip_cert_verify: u.searchParams.get("insecure") === "1"};}
+function parseTuic(url) { const u = new URL(url); const name = decodeURIComponent(u.hash.replace('#', '')) || `${u.hostname}:${u.port}`; return {name, type: "tuic", server: u.hostname, port: parseInt(u.port), uuid: u.username, password: u.searchParams.get("password") || "", alpn: u.searchParams.get("alpn")?.split(',') || [], sni: u.searchParams.get("sni") || u.hostname, skip_cert_verify: u.searchParams.get("insecure") === "1"};}
+function parseWireGuard(url) { const u = new URL(url); const name = decodeURIComponent(u.hash.replace('#', '')) || `${u.hostname}:${u.port}`; return {name, type: "wireguard", server: u.hostname, port: parseInt(u.port), ip: u.searchParams.get("ip") || "", private_key: u.searchParams.get("private_key") || "", public_key: u.searchParams.get("public_key") || "", allowed_ips: u.searchParams.get("allowed_ips")?.split(',') || ["0.0.0.0/0", "::/0"], mtu: parseInt(u.searchParams.get("mtu") || "0"), dns: u.searchParams.get("dns")?.split(',') || []};}
+function parseSocks(url) { const u = new URL(url); const name = decodeURIComponent(u.hash.replace('#','')) || `${u.hostname}:${u.port}`; return { name, type: "socks5", server: u.hostname, port: parseInt(u.port), username: u.username || undefined, password: u.password || undefined};}
+function parseHttpProxy(url) { const u = new URL(url); const name = decodeURIComponent(u.hash.replace('#','')) || `${u.hostname}:${u.port}`; return { name, type: "http", server: u.hostname, port: parseInt(u.port), username: u.username || undefined, password: u.password || undefined};}
+
+// ========== 统一解析入口 ==========
+function parseLink(url) {
+    let node = null;
+    try {
+        if (url.startsWith("ss://")) node = parseSS(url);
+        else if (url.startsWith("vless://")) node = parseVless(url);
+        else if (url.startsWith("vmess://")) node = parseVmess(url);
+        else if (url.startsWith("trojan://")) node = parseTrojan(url);
+        else if (url.startsWith("hysteria://")) node = parseHysteria(url);
+        else if (url.startsWith("hysteria2://")) node = parseHysteria2(url);
+        else if (url.startsWith("tuic://")) node = parseTuic(url);
+        else if (url.startsWith("wireguard://") || url.startsWith("wg://")) node = parseWireGuard(url);
+        else if (url.startsWith("socks5://")) node = parseSocks(url);
+        else if (url.startsWith("http://") || url.startsWith("https://")) node = parseHttpProxy(url);
+    } catch (e) { 
+        console.error(`解析失败 (Failed to parse): ${url.substring(0, 50)}...`, e); 
+    }
+
+    if (node) {
+        let protocol = node.type.toUpperCase();
+        if (node._subtype) {
+            protocol += `_${node._subtype}`;
+            delete node._subtype; // 清理临时属性
+        }
+        const originalName = node.name;
+        const truncatedName = originalName.length > 20 ? originalName.substring(0, 20) + '...' : originalName;
+        node.name = `${protocol}-${truncatedName}`;
+    }
+    return node;
+}
+
+// ========== YAML输出及页面交互 ==========
+function convert() {
+    const lines = document.getElementById("input").value.trim().split("\n");
+    const proxies = lines.map(line => line.trim()).filter(Boolean).map(parseLink).filter(Boolean);
+    const full = document.getElementById("fullConfig").checked;
+    let yamlString = "";
+
+    if (full) {
+        const proxyNames = proxies.map(p => p.name);
+        let finalYaml = "port: 7890\nsocks-port: 7891\nmode: rule\nallow-lan: true\nlog-level: info\n\nproxies:\n";
+        proxies.forEach(p => {
+             finalYaml += `  - ${JSON.stringify(p)}\n`;
+        });
+        finalYaml += "\nproxy-groups:\n";
+        finalYaml += "  - name: 🚀 节点选择\n    type: select\n    proxies:\n      - DIRECT\n";
+        proxyNames.forEach(name => {
+             finalYaml += `      - "${name}"\n`;
+        });
+        finalYaml += "\nrule-providers:\n";
+        finalYaml += "  ChinaDomain:\n    type: http\n    behavior: domain\n    url: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/china_domain.txt\n    path: ./ruleset/china_domain.yaml\n    interval: 86400\n";
+        finalYaml += "  ChinaIp:\n    type: http\n    behavior: ipcidr\n    url: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/china_ip.txt\n    path: ./ruleset/china_ip.yaml\n    interval: 86400\n";
+        finalYaml += "\nrules:\n  - RULE-SET,ChinaDomain,DIRECT\n  - RULE-SET,ChinaIp,DIRECT\n  - MATCH,🚀 节点选择\n";
+        yamlString = finalYaml;
+    } else {
+        yamlString = "proxies:\n" + proxies.map(p => `  - ${JSON.stringify(p)}`).join('\n');
+    }
+    document.getElementById("output").textContent = yamlString;
+}
+function copyOutput() { const text = document.getElementById("output").textContent; if (!text.trim()) return; navigator.clipboard.writeText(text).then(() => alert("配置已复制"));}
+function downloadYaml() { const text = document.getElementById("output").textContent; if (!text.trim()) return; const blob = new Blob([text], {type: 'text/yaml'}); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'clash-meta-config.yaml'; a.click(); URL.revokeObjectURL(a.href);}
+</script>
+</body>
+</html>
