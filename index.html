@@ -147,7 +147,7 @@
             try {
                 const u = new URL(url);
                 const name = decodeURIComponent(u.hash.replace('#', '')) || `${u.hostname}:${u.port}`;
-                let userInfo = u.username;
+                let userInfo = decodeURIComponent(u.username || "");
                 if (u.password) userInfo = `${u.username}:${u.password}`;
                 const decodedUserInfo = safeB64Decode(userInfo);
                 const firstColonIndex = decodedUserInfo.indexOf(':');
@@ -176,6 +176,37 @@
                                 skip_cert_verify: opts.tls || false
                             };
                         } else { node['plugin-opts'] = opts; }
+                    } else if (decodedPlugin.includes('simple-obfs')) {
+                        node.plugin = 'simple-obfs';
+                        const pluginParts = decodedPlugin.split(';');
+                        const opts = {};
+                        pluginParts.forEach(part => {
+                            const [key, value] = part.split('=');
+                            if (key === 'obfs' && value === 'http') opts.mode = 'http';
+                            else if (key === 'obfs-host' || key === 'host') opts.host = value;
+                            else if (key === 'path') opts.path = value;
+                        });
+                        node['plugin-opts'] = { mode: opts.mode || 'http', host: opts.host || u.hostname, path: opts.path || "/" };
+                    } else if (decodedPlugin.includes('shadow-tls')) {
+                        node.plugin = 'shadow-tls';
+                        const pluginParts = decodedPlugin.split(';');
+                        const opts = {};
+                        pluginParts.forEach(part => {
+                            const [key, value] = part.split('=');
+                            if (key === 'host') opts.host = value;
+                            else if (key === 'password') opts.password = value;
+                            else if (key === 'version') opts.version = value;
+                        });
+                        node['plugin-opts'] = { host: opts.host || u.hostname, password: opts.password || "", version: opts.version || 1 };
+                    }
+                } else {
+                    shadow_tls = u.searchParams.get('shadow-tls')
+                    if (shadow_tls) {
+                        node.plugin = 'shadow-tls';
+                        const pluginStr = safeB64Decode(shadow_tls);
+                        const plugin = JSON.parse(pluginStr);
+                        node.port = plugin.port || u.port;
+                        node['plugin-opts'] = { host: plugin.host || u.hostname, password: plugin.password || "", version: plugin.version || 1 };
                     }
                 }
                 return node;
